@@ -5,7 +5,7 @@ import (
 	ConcurrencyPackage "db-engine-v2/internal/concurrency"
 	TreePackage "db-engine-v2/internal/storage/BTree"
 	BufferPoolPackage "db-engine-v2/internal/storage/BufferPool"
-	TransactionPackage "db-engine-v2/internal/transaction"
+
 	"encoding/binary"
 	"errors"
 
@@ -47,21 +47,21 @@ func NewNonClusteredIndex(columnName string, primaryKey string, bufferPool *Buff
 		IndexTree:  indexTree,
 	}, nil
 }
-func (idx *NonClusteredIndex) Insert(secondaryKey []byte, primaryKey []byte, Trans *TransactionPackage.Transaction) error {
-	return idx.IndexTree.Insert(secondaryKey, primaryKey, Trans)
+func (idx *NonClusteredIndex) Insert(secondaryKey []byte, primaryKey []byte, TransID types.TransactionID) error {
+	return idx.IndexTree.Insert(secondaryKey, primaryKey, TransID)
 }
-func (idx *NonClusteredIndex) Delete(secondaryKey []byte, primaryKey []byte, Trans *TransactionPackage.Transaction) error {
-	return idx.IndexTree.Delete(secondaryKey, Trans)
+func (idx *NonClusteredIndex) Delete(secondaryKey []byte, primaryKey []byte, TransID types.TransactionID) error {
+	return idx.IndexTree.Delete(secondaryKey, TransID)
 }
-func (idx *NonClusteredIndex) Search(secondaryKey []byte, Trans *TransactionPackage.Transaction) (map[string][]byte, error) {
-	rowData, err := idx.IndexTree.SearchValue(secondaryKey, Trans)
+func (idx *NonClusteredIndex) Search(secondaryKey []byte) (map[string][]byte, error) {
+	rowData, err := idx.IndexTree.SearchValue(secondaryKey)
 	if err != nil {
 		return nil, err
 	}
 	return deserializeRow(rowData)
 }
-func (idx *NonClusteredIndex) RangeQuery(startKey []byte, endKey []byte, Trans *TransactionPackage.Transaction) ([][]byte, error) {
-	rowData, err := idx.IndexTree.RangeQuery(startKey, endKey, Trans)
+func (idx *NonClusteredIndex) RangeQuery(startKey []byte, endKey []byte) ([][]byte, error) {
+	rowData, err := idx.IndexTree.RangeQuery(startKey, endKey)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,7 @@ func (t *Table) AddNonClusteredIndex(columnName string, buferPool *BufferPoolPac
 	return nil
 }
 
-func (t *Table) Insert(row map[string][]byte, Trans *TransactionPackage.Transaction) error {
+func (t *Table) Insert(row map[string][]byte, TransID types.TransactionID) error {
 
 	primaryKey, ok := row[t.Schema.PrimaryKey]
 	if !ok {
@@ -120,27 +120,27 @@ func (t *Table) Insert(row map[string][]byte, Trans *TransactionPackage.Transact
 	if err != nil {
 		return err
 	}
-	if err := t.ClusteredIndex.Insert(primaryKey, rowData, Trans); err != nil {
+	if err := t.ClusteredIndex.Insert(primaryKey, rowData, TransID); err != nil {
 		return err
 	}
 
 	for columnName, index := range t.NonClusteredIndexes {
-		if err := index.Insert(row[columnName], primaryKey, Trans); err != nil {
+		if err := index.Insert(row[columnName], primaryKey, TransID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-func (t *Table) Delete(row map[string][]byte, Trans *TransactionPackage.Transaction) error {
+func (t *Table) Delete(row map[string][]byte, TransID types.TransactionID) error {
 	primaryKey, ok := row[t.Schema.PrimaryKey]
 	if !ok {
 		return errors.New("primary key is not provided")
 	}
-	if err := t.ClusteredIndex.Delete(primaryKey, Trans); err != nil {
+	if err := t.ClusteredIndex.Delete(primaryKey, TransID); err != nil {
 		return err
 	}
 	for columnName, index := range t.NonClusteredIndexes {
-		if err := index.Delete(row[columnName], primaryKey, Trans); err != nil {
+		if err := index.Delete(row[columnName], primaryKey, TransID); err != nil {
 			return err
 		}
 	}
@@ -185,16 +185,16 @@ func deserializeRow(data []byte) (map[string][]byte, error) {
 	return row, nil
 }
 
-func (t *Table) FindByClusteredIndex(key []byte, Trans *TransactionPackage.Transaction) (map[string][]byte, error) {
-	rowData, err := t.ClusteredIndex.SearchValue(key, Trans)
+func (t *Table) FindByClusteredIndex(key []byte) (map[string][]byte, error) {
+	rowData, err := t.ClusteredIndex.SearchValue(key)
 	if err != nil {
 		return nil, err
 	}
 	return deserializeRow(rowData)
 }
 
-func (t *Table) RangeQueryByClusteredIndex(startKey []byte, endKey []byte, Trans *TransactionPackage.Transaction) ([]map[string][]byte, error) {
-	rowData, err := t.ClusteredIndex.RangeQuery(startKey, endKey, Trans)
+func (t *Table) RangeQueryByClusteredIndex(startKey []byte, endKey []byte) ([]map[string][]byte, error) {
+	rowData, err := t.ClusteredIndex.RangeQuery(startKey, endKey)
 	if err != nil {
 		return nil, err
 	}
@@ -209,37 +209,37 @@ func (t *Table) RangeQueryByClusteredIndex(startKey []byte, endKey []byte, Trans
 	return result, nil
 }
 
-func (t *Table) FindByNonClusteredIndex(columnName string, key []byte, Trans *TransactionPackage.Transaction) (map[string][]byte, error) {
+func (t *Table) FindByNonClusteredIndex(columnName string, key []byte) (map[string][]byte, error) {
 	index, ok := t.NonClusteredIndexes[columnName]
 	if !ok {
 		return nil, errors.New("no such index on this column")
 	}
 
-	primaryKeyData, err := index.Search(key, Trans)
+	primaryKeyData, err := index.Search(key)
 	if err != nil {
 		return nil, err
 	}
 
-	row, err := t.FindByClusteredIndex(primaryKeyData[t.Schema.PrimaryKey], Trans)
+	row, err := t.FindByClusteredIndex(primaryKeyData[t.Schema.PrimaryKey])
 	if err != nil {
 		return nil, err
 	}
 	return row, nil
 }
 
-func (t *Table) RangeQueryByNonClusteredIndex(columnName string, startKey []byte, endKey []byte, Trans *TransactionPackage.Transaction) ([]map[string][]byte, error) {
+func (t *Table) RangeQueryByNonClusteredIndex(columnName string, startKey []byte, endKey []byte) ([]map[string][]byte, error) {
 	index, ok := t.NonClusteredIndexes[columnName]
 	if !ok {
 		return nil, errors.New("no such index on this column")
 	}
 
-	primaryKeyData, err := index.RangeQuery(startKey, endKey, Trans)
+	primaryKeyData, err := index.RangeQuery(startKey, endKey)
 	if err != nil {
 		return nil, err
 	}
 	var result []map[string][]byte
 	for _, pkMap := range primaryKeyData {
-		row, err := t.FindByClusteredIndex(pkMap, Trans)
+		row, err := t.FindByClusteredIndex(pkMap)
 		if err != nil {
 			return nil, err
 		}

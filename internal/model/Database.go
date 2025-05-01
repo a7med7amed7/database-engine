@@ -4,19 +4,17 @@ import (
 	ConcurrencyPackage "db-engine-v2/internal/concurrency"
 	BufferPoolPackage "db-engine-v2/internal/storage/BufferPool"
 	DiskManager "db-engine-v2/internal/storage/Disk"
-	TransactionPackage "db-engine-v2/internal/transaction"
 	WriteAheadLog "db-engine-v2/internal/wal"
 	"errors"
 )
 
 type Database struct {
-	Name               string
-	Tables             map[string]*Table
-	BufferPool         *BufferPoolPackage.BufferPoolManager
-	DiskManager        *DiskManager.DiskManager
-	LockManager        *ConcurrencyPackage.LockManager
-	TransactionManager *TransactionPackage.TransactionManager
-	WALManager         *WriteAheadLog.WALManager
+	Name        string
+	Tables      map[string]*Table
+	BufferPool  *BufferPoolPackage.BufferPoolManager
+	DiskManager *DiskManager.DiskManager
+	LockManager *ConcurrencyPackage.LockManager
+	WALManager  *WriteAheadLog.WALManager
 }
 
 func NewDatabase(name string, dbFilePath string, logFilePath string, pageSize uint32, poolSize uint32) (*Database, error) {
@@ -30,15 +28,13 @@ func NewDatabase(name string, dbFilePath string, logFilePath string, pageSize ui
 	if err != nil {
 		return nil, err
 	}
-	transactionManager := TransactionPackage.NewTransactionManager(walManager, bufferPoolManager, lockManager)
 	return &Database{
-		Name:               name,
-		Tables:             make(map[string]*Table),
-		LockManager:        lockManager,
-		TransactionManager: transactionManager,
-		BufferPool:         bufferPoolManager,
-		DiskManager:        diskManager,
-		WALManager:         walManager,
+		Name:        name,
+		Tables:      make(map[string]*Table),
+		LockManager: lockManager,
+		BufferPool:  bufferPoolManager,
+		DiskManager: diskManager,
+		WALManager:  walManager,
 	}, nil
 }
 

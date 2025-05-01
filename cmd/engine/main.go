@@ -2,6 +2,7 @@ package main
 
 import (
 	model "db-engine-v2/internal/model"
+	TransactionPackage "db-engine-v2/internal/transaction"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
@@ -46,7 +47,7 @@ func main() {
 		fmt.Println("error creating a table")
 		return
 	}
-	usersTable, err := db.GetTable("users")
+	_, err = db.GetTable("users")
 	if err != nil {
 		fmt.Println("error getting a table")
 		return
@@ -56,11 +57,7 @@ func main() {
 	// 	fmt.Println("error adding a non-clustered index")
 	// 	return
 	// }
-	Trans, err := db.TransactionManager.Begin()
-	if err != nil {
-		fmt.Println("Error beginning transaction:", err)
-		return
-	}
+
 	// err = usersTable.AddNonClusteredIndex("name", db.BufferPool, db.LockManager, 4)
 	// if err != nil {
 	// 	fmt.Println(err)
@@ -123,13 +120,14 @@ func main() {
 	// for _, item := range data {
 	// 	fmt.Println("Name found", string(item["name"]))
 	// }
+	TransManager := TransactionPackage.NewTransactionManager(db)
 	var wg sync.WaitGroup
-	for i := 1; i < 20; i++ {
+	for i := 1; i < 2; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			// Create a new transaction for each goroutine
-			localTrans, err := db.TransactionManager.Begin()
+			localTrans, err := TransManager.Begin()
 			if err != nil {
 				fmt.Println("Error beginning transaction:", err)
 				return
@@ -140,26 +138,32 @@ func main() {
 				"age":   []byte{0, 0, 0, 25},
 				"score": []byte{0, 0, 0, 11},
 			}
-			queryInsert := model.NewQuery(model.QueryTypeInsert, "", nil, nil, row, localTrans, usersTable)
-			_, err = queryInsert.Execute()
+			err = TransManager.Insert("users", row, localTrans)
+			// queryInsert := localTrans.NewQuery("insert", "", nil, nil, row, localTrans.ID, usersTable)
+			// _, err = queryInsert.Execute()
 			if err != nil {
 				fmt.Printf("Error inserting row %d: %v\n", i, err)
 			}
 			// Don't forget to commit!
-			db.TransactionManager.Commit(localTrans)
+			TransManager.Abort(localTrans)
 		}(i)
 	}
 	wg.Wait()
-	usersTable.ClusteredIndex.PrintTree(Trans)
-	querySelect := model.NewQuery(model.QueryTypeSelect, "id", IntToBytes(1), IntToBytes(30), nil, Trans, usersTable)
-	data, err := querySelect.Execute()
-	if err != nil {
-		fmt.Print(err)
-		return
-	}
-	fmt.Println(data)
-	for i, item := range data {
-		fmt.Println("Name found ", i+1, string(item["name"]))
-	}
+	// usersTable.ClusteredIndex.PrintTree(Trans)
+	// Trans, err := TransManager.Begin()
+	// if err != nil {
+	// 	fmt.Println("Error beginning transaction:", err)
+	// 	return
+	// }
+	// querySelect := Trans.NewQuery("select", "id", IntToBytes(1), IntToBytes(30), nil, Trans.ID, usersTable)
+	// data, err := querySelect.Execute()
+	// if err != nil {
+	// 	fmt.Print(err)
+	// 	return
+	// }
+	// fmt.Println(data)
+	// for i, item := range data {
+	// 	fmt.Println("Name found ", i+1, string(item["name"]))
+	// }
 
 }

@@ -5,10 +5,8 @@ import (
 	ConcurrencyPackage "db-engine-v2/internal/concurrency"
 	BufferPoolPackage "db-engine-v2/internal/storage/BufferPool"
 	PagePackage "db-engine-v2/internal/storage/Page"
-	TransactionPackage "db-engine-v2/internal/transaction"
 	"db-engine-v2/types"
 	"errors"
-	"fmt"
 	"sync"
 )
 
@@ -50,7 +48,7 @@ func NewBTree(bufferPool *BufferPoolPackage.BufferPoolManager, lockManager *Conc
 	bufferPool.UnPinPage(rootPage.GetID(), true)
 	return tree, nil
 }
-func (tree *BTree) SearchValue(key []byte, Trans *TransactionPackage.Transaction) ([]byte, error) {
+func (tree *BTree) SearchValue(key []byte) ([]byte, error) {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
 
@@ -65,7 +63,7 @@ func (tree *BTree) SearchValue(key []byte, Trans *TransactionPackage.Transaction
 		return nil, err
 	}
 
-	leafNode, leafPage, err := tree.findLeafNode(rootNode, key, Trans)
+	leafNode, leafPage, err := tree.findLeafNode(rootNode, key)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +75,7 @@ func (tree *BTree) SearchValue(key []byte, Trans *TransactionPackage.Transaction
 	}
 	return nil, errors.New("key doesn't exist")
 }
-func (tree *BTree) lowerBound(key []byte, Trans *TransactionPackage.Transaction) (*BNode, int, error) {
+func (tree *BTree) lowerBound(key []byte) (*BNode, int, error) {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
 
@@ -92,7 +90,7 @@ func (tree *BTree) lowerBound(key []byte, Trans *TransactionPackage.Transaction)
 		return nil, 0, err
 	}
 
-	leafNode, leafPage, err := tree.findLeafNode(rootNode, key, Trans)
+	leafNode, leafPage, err := tree.findLeafNode(rootNode, key)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -106,7 +104,7 @@ func (tree *BTree) lowerBound(key []byte, Trans *TransactionPackage.Transaction)
 	return leafNode, 0, nil
 }
 
-func (tree *BTree) upperBound(key []byte, Trans *TransactionPackage.Transaction) (*BNode, int, error) {
+func (tree *BTree) upperBound(key []byte) (*BNode, int, error) {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
 
@@ -121,7 +119,7 @@ func (tree *BTree) upperBound(key []byte, Trans *TransactionPackage.Transaction)
 		return nil, 0, err
 	}
 
-	leafNode, leafPage, err := tree.findLeafNode(rootNode, key, Trans)
+	leafNode, leafPage, err := tree.findLeafNode(rootNode, key)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -135,7 +133,7 @@ func (tree *BTree) upperBound(key []byte, Trans *TransactionPackage.Transaction)
 	return leafNode, len(leafNode.Keys), nil
 }
 
-func (tree *BTree) findLeafNode(node *BNode, key []byte, Trans *TransactionPackage.Transaction) (*BNode, *PagePackage.Page, error) {
+func (tree *BTree) findLeafNode(node *BNode, key []byte) (*BNode, *PagePackage.Page, error) {
 	if node.isLeaf {
 		leafPage, err := tree.BufferPool.ReadPage(node.PageID)
 		if err != nil {
@@ -162,24 +160,24 @@ func (tree *BTree) findLeafNode(node *BNode, key []byte, Trans *TransactionPacka
 		tree.BufferPool.UnPinPage(childPage.GetID(), false)
 		return nil, nil, err
 	}
-	leafNode, leafPage, err := tree.findLeafNode(childNode, key, Trans)
+	leafNode, leafPage, err := tree.findLeafNode(childNode, key)
 	tree.BufferPool.UnPinPage(childPage.GetID(), false)
 	return leafNode, leafPage, err
 }
 
 // Insert a key-value pair into the B+ tree
-func (tree *BTree) Insert(key []byte, value []byte, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) Insert(key []byte, value []byte, TransID types.TransactionID) error {
 
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
 
 	// Acquire exclusive lock (write) on the tree
 	root := tree.RootPageID
-	if err := tree.LockManager.AcquireLock(Trans.ID, types.ResourceID(root), ConcurrencyPackage.LockModeExclusive); err != nil {
+	if err := tree.LockManager.AcquireLock(TransID, types.ResourceID(root), ConcurrencyPackage.LockModeExclusive); err != nil {
 		return err
 	}
-	defer tree.LockManager.ReleaseLock(Trans.ID, types.ResourceID(root))
-	defer tree.LockManager.ReleaseLock(Trans.ID, types.ResourceID(tree.RootPageID))
+	defer tree.LockManager.ReleaseLock(TransID, types.ResourceID(root))
+	defer tree.LockManager.ReleaseLock(TransID, types.ResourceID(tree.RootPageID))
 
 	rootPage, err := tree.BufferPool.ReadPage(tree.RootPageID)
 	if err != nil {
@@ -192,7 +190,7 @@ func (tree *BTree) Insert(key []byte, value []byte, Trans *TransactionPackage.Tr
 	}
 
 	// Pass it to a function to insert it, check if split is happened after insertion to change the root if there's a new one
-	newRoot, splitOccured, err := tree.insertIntoNode(rootNode, rootPage, key, value, nil, Trans)
+	newRoot, splitOccured, err := tree.insertIntoNode(rootNode, rootPage, key, value, nil, TransID)
 	if err != nil {
 		tree.BufferPool.UnPinPage(rootPage.GetID(), false)
 		return err
@@ -202,15 +200,16 @@ func (tree *BTree) Insert(key []byte, value []byte, Trans *TransactionPackage.Tr
 		tree.RootPageID = newRoot.PageID
 	}
 	tree.BufferPool.UnPinPage(rootPage.GetID(), false)
+
 	return nil
 }
 
 // Recursively insert a key-value pair into a node
 // Returns the (possibly new) root node, a flag indicating if a split occurred, and any error
-func (tree *BTree) insertIntoNode(node *BNode, page *PagePackage.Page, key []byte, value []byte, newChildPageID *types.PageID, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) insertIntoNode(node *BNode, page *PagePackage.Page, key []byte, value []byte, newChildPageID *types.PageID, TransID types.TransactionID) (*BNode, bool, error) {
 	// If we are at the leaf level, insert directly
 	if node.isLeaf {
-		return tree.insertIntoLeaf(node, page, key, value, Trans)
+		return tree.insertIntoLeaf(node, page, key, value, TransID)
 	}
 
 	// For internal nodes, find the next child to insert into
@@ -234,7 +233,7 @@ func (tree *BTree) insertIntoNode(node *BNode, page *PagePackage.Page, key []byt
 	}
 
 	// Here's the issue - we're not capturing the new child page ID
-	newChildNode, splitOccured, err := tree.insertIntoNode(childNode, childPage, key, value, nil, Trans)
+	newChildNode, splitOccured, err := tree.insertIntoNode(childNode, childPage, key, value, nil, TransID)
 	if err != nil {
 		tree.BufferPool.UnPinPage(childPage.GetID(), false)
 		return nil, false, err
@@ -254,22 +253,22 @@ func (tree *BTree) insertIntoNode(node *BNode, page *PagePackage.Page, key []byt
 
 	// Get the separator key and insert into this node
 	separatorKey := newChildNode.Keys[0]
-	return tree.insertIntoInternal(node, page, separatorKey, newChildNode.PageID, Trans)
+	return tree.insertIntoInternal(node, page, separatorKey, newChildNode.PageID, TransID)
 }
-func (tree *BTree) insertIntoLeaf(node *BNode, page *PagePackage.Page, key []byte, value []byte, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) insertIntoLeaf(node *BNode, page *PagePackage.Page, key []byte, value []byte, TransID types.TransactionID) (*BNode, bool, error) {
 	pos := 0
 	for i, nodeKey := range node.Keys {
 		if bytes.Compare(key, nodeKey) > 0 { // key > nodeKey
 			pos = i + 1
 		} else if bytes.Equal(key, nodeKey) {
 			// Key already exists, we can just update the value
+
 			node.Values[i] = value
 			page.Data = node.SerializeBNode()
 			page.SetDirty(true)
 			return node, false, nil
 		}
 	}
-	fmt.Println("new leaf", key, pos, node)
 	// Insert the key-value pair at the correct position
 	node.Keys = append(node.Keys, nil)
 	copy(node.Keys[pos+1:], node.Keys[pos:])
@@ -286,9 +285,9 @@ func (tree *BTree) insertIntoLeaf(node *BNode, page *PagePackage.Page, key []byt
 		page.SetDirty(true)
 		return node, false, nil
 	}
-	return tree.splitLeafNode(node, page, Trans)
+	return tree.splitLeafNode(node, page, TransID)
 }
-func (tree *BTree) insertIntoInternal(node *BNode, page *PagePackage.Page, key []byte, RightChildPageID types.PageID, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) insertIntoInternal(node *BNode, page *PagePackage.Page, key []byte, RightChildPageID types.PageID, TransID types.TransactionID) (*BNode, bool, error) {
 	pos := 0
 	for i, nodeKey := range node.Keys {
 		if bytes.Compare(key, nodeKey) > 0 {
@@ -331,9 +330,9 @@ func (tree *BTree) insertIntoInternal(node *BNode, page *PagePackage.Page, key [
 		page.SetDirty(true)
 		return node, false, nil
 	}
-	return tree.SplitInternalNode(node, page, Trans)
+	return tree.SplitInternalNode(node, page, TransID)
 }
-func (tree *BTree) SplitInternalNode(node *BNode, page *PagePackage.Page, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) SplitInternalNode(node *BNode, page *PagePackage.Page, TransID types.TransactionID) (*BNode, bool, error) {
 	// Create a new internal node
 	newPage, err := tree.BufferPool.NewPage()
 	if err != nil {
@@ -380,7 +379,7 @@ func (tree *BTree) SplitInternalNode(node *BNode, page *PagePackage.Page, Trans 
 	// If the node is the root node (splitted), we need to create a new root
 
 	if node.Parent == 0 {
-		return tree.createNewRoot(node, newNode, moveUpKey, Trans)
+		return tree.createNewRoot(node, newNode, moveUpKey, TransID)
 	}
 
 	// The parent might change so we need to update
@@ -393,7 +392,7 @@ func (tree *BTree) SplitInternalNode(node *BNode, page *PagePackage.Page, Trans 
 		tree.BufferPool.UnPinPage(parentPage.GetID(), false)
 		return nil, false, err
 	}
-	_, splitOccured, err := tree.insertIntoInternal(parentNode, parentPage, newNode.Keys[0], newNode.PageID, Trans)
+	_, splitOccured, err := tree.insertIntoInternal(parentNode, parentPage, newNode.Keys[0], newNode.PageID, TransID)
 	tree.BufferPool.UnPinPage(parentPage.GetID(), true)
 
 	if err != nil {
@@ -402,7 +401,7 @@ func (tree *BTree) SplitInternalNode(node *BNode, page *PagePackage.Page, Trans 
 	return node, splitOccured, nil
 
 }
-func (tree *BTree) splitLeafNode(node *BNode, page *PagePackage.Page, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) splitLeafNode(node *BNode, page *PagePackage.Page, TransID types.TransactionID) (*BNode, bool, error) {
 	// Create a new leaf node
 	newPage, err := tree.BufferPool.NewPage()
 	if err != nil {
@@ -458,7 +457,7 @@ func (tree *BTree) splitLeafNode(node *BNode, page *PagePackage.Page, Trans *Tra
 
 	// When splitting the root node, the newNode.Keys[0] will form a new root node
 	if node.Parent == 0 { // root node
-		return tree.createNewRoot(node, newNode, newNode.Keys[0], Trans)
+		return tree.createNewRoot(node, newNode, newNode.Keys[0], TransID)
 	}
 
 	// Push up newNode.Keys[0] to the parent and split if needed ans so on
@@ -471,7 +470,7 @@ func (tree *BTree) splitLeafNode(node *BNode, page *PagePackage.Page, Trans *Tra
 		tree.BufferPool.UnPinPage(parentPage.GetID(), false)
 		return nil, false, err
 	}
-	_, splitOccured, err := tree.insertIntoInternal(parentNode, parentPage, newNode.Keys[0], newNode.PageID, Trans)
+	_, splitOccured, err := tree.insertIntoInternal(parentNode, parentPage, newNode.Keys[0], newNode.PageID, TransID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -479,9 +478,9 @@ func (tree *BTree) splitLeafNode(node *BNode, page *PagePackage.Page, Trans *Tra
 
 }
 
-func (tree *BTree) createNewRoot(leftNode *BNode, rightNode *BNode, key []byte, Trans *TransactionPackage.Transaction) (*BNode, bool, error) {
+func (tree *BTree) createNewRoot(leftNode *BNode, rightNode *BNode, key []byte, TransID types.TransactionID) (*BNode, bool, error) {
 	rootPage, err := tree.BufferPool.NewPage()
-	tree.LockManager.AcquireLock(Trans.ID, types.ResourceID(rootPage.ID), ConcurrencyPackage.LockModeExclusive)
+	tree.LockManager.AcquireLock(TransID, types.ResourceID(rootPage.ID), ConcurrencyPackage.LockModeExclusive)
 	if err != nil {
 		return nil, false, err
 	}
@@ -517,10 +516,10 @@ func (tree *BTree) createNewRoot(leftNode *BNode, rightNode *BNode, key []byte, 
 	return rootNode, true, nil
 }
 
-func (tree *BTree) Delete(key []byte, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) Delete(key []byte, TransID types.TransactionID) error {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
-	if err := tree.LockManager.AcquireLock(Trans.ID, types.ResourceID(tree.RootPageID), ConcurrencyPackage.LockModeExclusive); err != nil {
+	if err := tree.LockManager.AcquireLock(TransID, types.ResourceID(tree.RootPageID), ConcurrencyPackage.LockModeExclusive); err != nil {
 		return err
 	}
 	rootPage, err := tree.BufferPool.ReadPage(tree.RootPageID)
@@ -533,7 +532,7 @@ func (tree *BTree) Delete(key []byte, Trans *TransactionPackage.Transaction) err
 		return err
 	}
 
-	keyFound, err := tree.deleteFromNode(rootNode, rootPage, key, Trans)
+	keyFound, err := tree.deleteFromNode(rootNode, rootPage, key)
 
 	if err != nil {
 		tree.BufferPool.UnPinPage(rootPage.GetID(), false)
@@ -571,9 +570,9 @@ func (tree *BTree) Delete(key []byte, Trans *TransactionPackage.Transaction) err
 	return nil
 
 }
-func (tree *BTree) deleteFromNode(node *BNode, page *PagePackage.Page, key []byte, Trans *TransactionPackage.Transaction) (bool, error) {
+func (tree *BTree) deleteFromNode(node *BNode, page *PagePackage.Page, key []byte) (bool, error) {
 	if node.isLeaf {
-		return tree.deleteFromLeafNode(node, page, key, Trans)
+		return tree.deleteFromLeafNode(node, page, key)
 	}
 	childIndex := 0
 	for i, nodeKey := range node.Keys {
@@ -593,7 +592,7 @@ func (tree *BTree) deleteFromNode(node *BNode, page *PagePackage.Page, key []byt
 		return false, err
 	}
 
-	keyFound, err := tree.deleteFromLeafNode(childNode, childPage, key, Trans)
+	keyFound, err := tree.deleteFromLeafNode(childNode, childPage, key)
 	if err != nil {
 		tree.BufferPool.UnPinPage(childPage.GetID(), false)
 		return false, err
@@ -602,7 +601,7 @@ func (tree *BTree) deleteFromNode(node *BNode, page *PagePackage.Page, key []byt
 	// Only the leaf node is allowed to be underfull
 	if len(childNode.Keys) < (int(tree.MaxChilds-1)/2) && (childNode.PageID != tree.RootPageID) {
 		// Need to handle an underflow of the childNode (either by merging or borrowing)
-		err = tree.handleUnderflow(node, page, childNode, childPage, childIndex, Trans)
+		err = tree.handleUnderflow(node, page, childNode, childPage, childIndex)
 		if err != nil {
 			tree.BufferPool.UnPinPage(childPage.GetID(), true)
 			return false, err
@@ -612,7 +611,7 @@ func (tree *BTree) deleteFromNode(node *BNode, page *PagePackage.Page, key []byt
 	return keyFound, nil
 
 }
-func (tree *BTree) deleteFromLeafNode(node *BNode, page *PagePackage.Page, key []byte, Trans *TransactionPackage.Transaction) (bool, error) {
+func (tree *BTree) deleteFromLeafNode(node *BNode, page *PagePackage.Page, key []byte) (bool, error) {
 	keyPos := -1
 	for i, nodeKey := range node.Keys {
 		if bytes.Equal(key, nodeKey) {
@@ -629,7 +628,7 @@ func (tree *BTree) deleteFromLeafNode(node *BNode, page *PagePackage.Page, key [
 	page.SetDirty(true)
 	return true, nil
 }
-func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, childIndex int, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, childIndex int) error {
 	// To handle the underflow, first try to borrow from another sibling
 	// and if you can't, then try merging siblings
 	minKeys := int((tree.MaxChilds - 1) / 2)
@@ -647,7 +646,7 @@ func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNod
 		}
 		if len(leftSiblingNode.Keys) > minKeys {
 			// Now you can borrow becuase left sibling has enough keys
-			if err := tree.borrowFromLeftSibling(node, page, childNode, childPage, leftSiblingNode, leftSiblingPage, childIndex, Trans); err != nil {
+			if err := tree.borrowFromLeftSibling(node, page, childNode, childPage, leftSiblingNode, leftSiblingPage, childIndex); err != nil {
 				tree.BufferPool.UnPinPage(leftSiblingPage.GetID(), true)
 				return err
 			}
@@ -669,7 +668,7 @@ func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNod
 		}
 		if len(rightSiblingNode.Keys) > minKeys {
 			// You can borrow
-			if err := tree.borrowFromRightSibling(node, page, childNode, childPage, rightSiblingNode, rightSiblingPage, childIndex, Trans); err != nil {
+			if err := tree.borrowFromRightSibling(node, page, childNode, childPage, rightSiblingNode, rightSiblingPage, childIndex); err != nil {
 				tree.BufferPool.UnPinPage(rightSiblingPage.GetID(), true)
 				return err
 			}
@@ -692,7 +691,7 @@ func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNod
 			return err
 		}
 
-		if err := tree.mergeWithLeftSibling(node, page, childNode, childPage, leftSiblingNode, leftSiblingPage, childIndex, Trans); err != nil {
+		if err := tree.mergeWithLeftSibling(node, page, childNode, childPage, leftSiblingNode, leftSiblingPage, childIndex); err != nil {
 			tree.BufferPool.UnPinPage(leftSiblingPage.GetID(), true)
 			return err
 		}
@@ -709,7 +708,7 @@ func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNod
 			tree.BufferPool.UnPinPage(rightSiblingPage.GetID(), false)
 			return err
 		}
-		if err := tree.mergeWithRightSibling(node, page, childNode, childPage, rightSiblingNode, rightSiblingPage, childIndex, Trans); err != nil {
+		if err := tree.mergeWithRightSibling(node, page, childNode, childPage, rightSiblingNode, rightSiblingPage, childIndex); err != nil {
 			tree.BufferPool.UnPinPage(rightSiblingPage.GetID(), true)
 			return err
 		}
@@ -719,7 +718,7 @@ func (tree *BTree) handleUnderflow(node *BNode, page *PagePackage.Page, childNod
 	return errors.New("failed to handle underflow, no siblings are available")
 }
 
-func (tree *BTree) borrowFromLeftSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, leftSiblingNode *BNode, leftSiblingPage *PagePackage.Page, childIndex int, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) borrowFromLeftSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, leftSiblingNode *BNode, leftSiblingPage *PagePackage.Page, childIndex int) error {
 	if childNode.isLeaf {
 		// Just borrow the rightmost data from the left silbling
 		// and add to the beginning of the child node since its key
@@ -800,7 +799,7 @@ func (tree *BTree) borrowFromLeftSibling(node *BNode, page *PagePackage.Page, ch
 	return nil
 }
 
-func (tree *BTree) borrowFromRightSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, rightSiblingNode *BNode, rightSiblingPage *PagePackage.Page, childIndex int, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) borrowFromRightSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, rightSiblingNode *BNode, rightSiblingPage *PagePackage.Page, childIndex int) error {
 	if childNode.isLeaf {
 		borrowedKey := rightSiblingNode.Keys[0]
 		borrowedValue := rightSiblingNode.Values[0]
@@ -849,7 +848,7 @@ func (tree *BTree) borrowFromRightSibling(node *BNode, page *PagePackage.Page, c
 	return nil
 }
 
-func (tree *BTree) mergeWithLeftSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, leftSiblingNode *BNode, leftSiblingPage *PagePackage.Page, childIndex int, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) mergeWithLeftSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, leftSiblingNode *BNode, leftSiblingPage *PagePackage.Page, childIndex int) error {
 	seperatorIndex := childIndex - 1
 	if childNode.isLeaf {
 		// Just merge them and update the next leaf pointer.
@@ -901,7 +900,7 @@ func (tree *BTree) mergeWithLeftSibling(node *BNode, page *PagePackage.Page, chi
 	return nil
 }
 
-func (tree *BTree) mergeWithRightSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, rightSiblingNode *BNode, rightSiblingPage *PagePackage.Page, childIndex int, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) mergeWithRightSibling(node *BNode, page *PagePackage.Page, childNode *BNode, childPage *PagePackage.Page, rightSiblingNode *BNode, rightSiblingPage *PagePackage.Page, childIndex int) error {
 	seperatorIndex := childIndex
 
 	if childNode.isLeaf {
@@ -947,15 +946,15 @@ func (tree *BTree) mergeWithRightSibling(node *BNode, page *PagePackage.Page, ch
 	return nil
 }
 
-func (tree *BTree) RangeQuery(startKey []byte, endKey []byte, Trans *TransactionPackage.Transaction) ([][]byte, error) {
+func (tree *BTree) RangeQuery(startKey []byte, endKey []byte) ([][]byte, error) {
 	// Lock for reading
 	// tree.mu.Lock()
 	// defer tree.mu.Unlock()
-	leftNode, leftIndex, err := tree.lowerBound(startKey, Trans)
+	leftNode, leftIndex, err := tree.lowerBound(startKey)
 	if err != nil {
 		return nil, err
 	}
-	rightNode, rightIndex, err := tree.upperBound(endKey, Trans)
+	rightNode, rightIndex, err := tree.upperBound(endKey)
 	if err != nil {
 		return nil, err
 	}
@@ -963,8 +962,6 @@ func (tree *BTree) RangeQuery(startKey []byte, endKey []byte, Trans *Transaction
 	if (leftNode.PageID > rightNode.PageID) || ((leftNode.PageID == rightNode.PageID) && (leftIndex > rightIndex)) {
 		return nil, errors.New("start key must be before end key")
 	}
-	fmt.Println("lower", leftNode, leftIndex)
-	fmt.Println("upper", rightNode, rightIndex)
 	leftNodeCopy := *leftNode
 	rightNodeCopy := *rightNode
 
@@ -991,19 +988,18 @@ func (tree *BTree) RangeQuery(startKey []byte, endKey []byte, Trans *Transaction
 		leftIndex++
 
 	}
-	fmt.Println("res: ", resultValues, len(resultValues))
 	return resultValues, nil
 }
 
-func (tree *BTree) RangeUpdate(startKey []byte, endKey []byte, value []byte, Trans *TransactionPackage.Transaction) error {
+func (tree *BTree) RangeUpdate(startKey []byte, endKey []byte, value []byte) error {
 	// Lock for reading
 	// tree.mu.Lock()
 	// defer tree.mu.Unlock()
-	leftNode, leftIndex, err := tree.lowerBound(startKey, Trans)
+	leftNode, leftIndex, err := tree.lowerBound(startKey)
 	if err != nil {
 		return err
 	}
-	rightNode, rightIndex, err := tree.upperBound(endKey, Trans)
+	rightNode, rightIndex, err := tree.upperBound(endKey)
 	if err != nil {
 		return err
 	}
@@ -1034,64 +1030,5 @@ func (tree *BTree) RangeUpdate(startKey []byte, endKey []byte, value []byte, Tra
 		leftIndex++
 
 	}
-	return nil
-}
-
-func (tree *BTree) PrintTree(txn *TransactionPackage.Transaction) error {
-	fmt.Println("B+ Tree Structure:")
-
-	// Get root node
-	rootPage, err := tree.BufferPool.ReadPage(tree.RootPageID)
-	if err != nil {
-		return err
-	}
-
-	rootNode, err := DeSerializeBNode(rootPage.GetData())
-	if err != nil {
-		tree.BufferPool.UnPinPage(rootPage.GetID(), false)
-		return err
-	}
-
-	// Print tree structure recursively
-	err = tree.printNode(rootNode, 0, txn)
-
-	// Unpin the root page
-	tree.BufferPool.UnPinPage(rootPage.GetID(), false)
-
-	return err
-}
-
-func (tree *BTree) printNode(node *BNode, level int, txn *TransactionPackage.Transaction) error {
-
-	// For leaf nodes, print values
-	if node.isLeaf {
-		fmt.Println("leaf: ", node.Keys)
-	} else {
-		// For internal nodes, recursively print children
-		for _, childID := range node.PageIDs {
-
-			childPage, err := tree.BufferPool.ReadPage(childID)
-			if err != nil {
-				return err
-			}
-
-			childNode, err := DeSerializeBNode(childPage.GetData())
-			if err != nil {
-				tree.BufferPool.UnPinPage(childPage.GetID(), false)
-				return err
-			}
-
-			// Print child node
-			err = tree.printNode(childNode, level+1, txn)
-			if err != nil {
-				tree.BufferPool.UnPinPage(childPage.GetID(), false)
-				return err
-			}
-
-			// Unpin the child page
-			tree.BufferPool.UnPinPage(childPage.GetID(), false)
-		}
-	}
-
 	return nil
 }
