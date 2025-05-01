@@ -52,74 +52,6 @@ func main() {
 		fmt.Println("error getting a table")
 		return
 	}
-	// err = usersTable.AddNonClusteredIndex("age", db.BufferPool, db.LockManager, 4)
-	// if err != nil {
-	// 	fmt.Println("error adding a non-clustered index")
-	// 	return
-	// }
-
-	// err = usersTable.AddNonClusteredIndex("name", db.BufferPool, db.LockManager, 4)
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
-	// row := map[string][]byte{
-	// 	"id":    []byte{0, 0, 0, 1}, // Int 1
-	// 	"name":  []byte("Ahmed"),
-	// 	"age":   []byte{0, 0, 0, 25}, // Int 25
-	// 	"score": []byte{0, 0, 0, 11}, // Int 11
-	// }
-	// queryInsert := model.NewQuery(model.QueryTypeInsert, "", nil, nil, row, Trans, usersTable)
-	// _, err = queryInsert.Execute()
-	// if err != nil {
-	// 	fmt.Print("An error occured while inserting", err)
-	// 	return
-	// }
-
-	// row = map[string][]byte{
-	// 	"id":    []byte{0, 0, 0, 2}, // Int 2
-	// 	"name":  []byte("Belal"),
-	// 	"age":   []byte{0, 0, 0, 25}, // Int 25
-	// 	"score": []byte{0, 0, 0, 11}, // Int 11
-	// }
-	// queryInsert = model.NewQuery(model.QueryTypeInsert, "", nil, nil, row, Trans, usersTable)
-	// _, err = queryInsert.Execute()
-	// if err != nil {
-	// 	fmt.Print(err)
-	// 	return
-	// }
-	// updateRow := map[string][]byte{
-	// 	"name": []byte("Baraa"),
-	// }
-	// queryUpdate := model.NewQuery(model.QueryTypeUpdate, "id", []byte{0, 0, 0, 1}, []byte{0, 0, 0, 2}, updateRow, Trans, usersTable)
-	// _, err = queryUpdate.Execute()
-	// if err != nil {
-	// 	fmt.Print("x", err)
-	// 	return
-	// }
-	// querySelect := model.NewQuery(model.QueryTypeSelect, "id", []byte{0, 0, 0, 1}, []byte{0, 0, 0, 2}, nil, Trans, usersTable)
-	// data, err := querySelect.Execute()
-	// if err != nil {
-	// 	fmt.Print(err)
-	// 	return
-	// }
-	// for _, item := range data {
-	// 	fmt.Println("Name found", string(item["name"]))
-	// }
-	// queryDelete := model.NewQuery(model.QueryTypeDelete, "id", []byte{0, 0, 0, 1}, []byte{0, 0, 0, 1}, nil, Trans, usersTable)
-	// _, err = queryDelete.Execute()
-	// if err != nil {
-	// 	fmt.Print(err)
-	// 	return
-	// }
-	// querySelect = model.NewQuery(model.QueryTypeSelect, "name", []byte("A"), []byte("C"), nil, Trans, usersTable)
-	// data, err = querySelect.Execute()
-	// if err != nil {
-	// 	fmt.Print("x", err)
-	// 	return
-	// }
-	// for _, item := range data {
-	// 	fmt.Println("Name found", string(item["name"]))
-	// }
 	TransManager := TransactionPackage.NewTransactionManager(db)
 	var wg sync.WaitGroup
 	for i := 1; i < 2; i++ {
@@ -139,8 +71,6 @@ func main() {
 				"score": []byte{0, 0, 0, 11},
 			}
 			err = TransManager.Insert("users", row, localTrans)
-			// queryInsert := localTrans.NewQuery("insert", "", nil, nil, row, localTrans.ID, usersTable)
-			// _, err = queryInsert.Execute()
 			if err != nil {
 				fmt.Printf("Error inserting row %d: %v\n", i, err)
 			}
@@ -149,21 +79,5 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
-	// usersTable.ClusteredIndex.PrintTree(Trans)
-	// Trans, err := TransManager.Begin()
-	// if err != nil {
-	// 	fmt.Println("Error beginning transaction:", err)
-	// 	return
-	// }
-	// querySelect := Trans.NewQuery("select", "id", IntToBytes(1), IntToBytes(30), nil, Trans.ID, usersTable)
-	// data, err := querySelect.Execute()
-	// if err != nil {
-	// 	fmt.Print(err)
-	// 	return
-	// }
-	// fmt.Println(data)
-	// for i, item := range data {
-	// 	fmt.Println("Name found ", i+1, string(item["name"]))
-	// }
 
 }
