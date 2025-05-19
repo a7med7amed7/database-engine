@@ -54,7 +54,7 @@ func main() {
 	}
 	TransManager := TransactionPackage.NewTransactionManager(db)
 	var wg sync.WaitGroup
-	for i := 1; i < 2; i++ {
+	for i := 1; i < 5; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -75,9 +75,56 @@ func main() {
 				fmt.Printf("Error inserting row %d: %v\n", i, err)
 			}
 			// Don't forget to commit!
-			TransManager.Abort(localTrans)
+			TransManager.Commit(localTrans)
 		}(i)
 	}
 	wg.Wait()
+	selectTrans, err := TransManager.Begin()
+	if err != nil {
+		fmt.Println("Error beginning transaction:", err)
+		return
+	}
+	data, err := TransManager.Select("users", IntToBytes(3), IntToBytes(8), selectTrans)
+	TransManager.Commit(selectTrans)
+	if err != nil {
+		fmt.Println("Error selecting data")
+		return
+	}
+	fmt.Println("Selected data ", data)
 
+	var wg3 sync.WaitGroup
+	updateTrans, err := TransManager.Begin()
+	if err != nil {
+		fmt.Println("Error beginning transaction:", err)
+		return
+	}
+	updatedRow := map[string][]byte{
+		"id":    IntToBytes(3),
+		"name":  []byte(RandomString(6)),
+		"age":   []byte{0, 0, 0, 10},
+		"score": []byte{0, 0, 0, 6},
+	}
+	wg3.Add(1)
+	go func() {
+		defer wg3.Done()
+		err := TransManager.Update("users", updatedRow, updateTrans)
+		if err != nil {
+			fmt.Println("Error updating row:", err)
+			return
+		}
+		TransManager.Commit(updateTrans)
+	}()
+	wg3.Wait()
+	selectTrans2, err := TransManager.Begin()
+	if err != nil {
+		fmt.Println("Error beginning transaction:", err)
+		return
+	}
+	data2, err := TransManager.Select("users", IntToBytes(3), IntToBytes(8), selectTrans2)
+	TransManager.Commit(selectTrans2)
+	if err != nil {
+		fmt.Println("Error selecting data")
+		return
+	}
+	fmt.Println("Selected data ", data2)
 }

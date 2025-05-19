@@ -7,6 +7,7 @@ import (
 	PagePackage "db-engine-v2/internal/storage/Page"
 	"db-engine-v2/types"
 	"errors"
+	"log"
 	"sync"
 )
 
@@ -101,7 +102,7 @@ func (tree *BTree) lowerBound(key []byte) (*BNode, int, error) {
 			return leafNode, i, nil
 		}
 	}
-	return leafNode, 0, nil
+	return nil, -1, nil
 }
 
 func (tree *BTree) upperBound(key []byte) (*BNode, int, error) {
@@ -954,11 +955,13 @@ func (tree *BTree) RangeQuery(startKey []byte, endKey []byte) ([][]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	if leftIndex == -1 {
+		return make([][]byte, 0), nil
+	}
 	rightNode, rightIndex, err := tree.upperBound(endKey)
 	if err != nil {
 		return nil, err
 	}
-
 	if (leftNode.PageID > rightNode.PageID) || ((leftNode.PageID == rightNode.PageID) && (leftIndex > rightIndex)) {
 		return nil, errors.New("start key must be before end key")
 	}
@@ -992,22 +995,24 @@ func (tree *BTree) RangeQuery(startKey []byte, endKey []byte) ([][]byte, error) 
 }
 
 func (tree *BTree) RangeUpdate(startKey []byte, endKey []byte, value []byte) error {
-	// Lock for reading
+	// Lock for updating
 	// tree.mu.Lock()
 	// defer tree.mu.Unlock()
 	leftNode, leftIndex, err := tree.lowerBound(startKey)
 	if err != nil {
 		return err
 	}
+	if leftIndex == -1 {
+		return nil
+	}
 	rightNode, rightIndex, err := tree.upperBound(endKey)
 	if err != nil {
 		return err
 	}
-
+	log.Println("Starting...", leftIndex, leftNode.Keys, rightIndex, rightNode.Keys)
 	if (leftNode.PageID > rightNode.PageID) || ((leftNode.PageID == rightNode.PageID) && (leftIndex > rightIndex)) {
 		return errors.New("start key must be before end key")
 	}
-
 	for {
 		if (leftNode.PageID == rightNode.PageID) && (leftIndex == rightIndex) {
 			break
@@ -1025,9 +1030,13 @@ func (tree *BTree) RangeUpdate(startKey []byte, endKey []byte, value []byte) err
 			}
 			leftNode = nextNode
 			leftIndex = 0
+			continue
 		}
+
+		pageID := leftNode.PageID
 		leftNode.Values[leftIndex] = value
 		leftIndex++
+		tree.BufferPool.UnPinPage(pageID, true)
 
 	}
 	return nil

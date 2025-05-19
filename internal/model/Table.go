@@ -5,6 +5,7 @@ import (
 	ConcurrencyPackage "db-engine-v2/internal/concurrency"
 	TreePackage "db-engine-v2/internal/storage/BTree"
 	BufferPoolPackage "db-engine-v2/internal/storage/BufferPool"
+	"log"
 
 	"encoding/binary"
 	"errors"
@@ -131,6 +132,30 @@ func (t *Table) Insert(row map[string][]byte, TransID types.TransactionID) error
 	}
 	return nil
 }
+func (t *Table) Update(row map[string][]byte, TransID types.TransactionID) error {
+
+	primaryKey, ok := row[t.Schema.PrimaryKey]
+	if !ok {
+		return errors.New("primary key is not provided")
+	}
+
+	rowData, err := serializeRow(row)
+	if err != nil {
+		return err
+	}
+	// we can use the Insert function to do our update since if there's a match of the pk
+	// we can just update its value since we're sure it does exists
+	if err := t.ClusteredIndex.Insert(primaryKey, rowData, TransID); err != nil {
+		return err
+	}
+
+	// for columnName, index := range t.NonClusteredIndexes {
+	// 	if err := index.Insert(row[columnName], primaryKey, TransID); err != nil {
+	// 		return err
+	// 	}
+	// }
+	return nil
+}
 func (t *Table) Delete(row map[string][]byte, TransID types.TransactionID) error {
 	primaryKey, ok := row[t.Schema.PrimaryKey]
 	if !ok {
@@ -194,6 +219,7 @@ func (t *Table) FindByClusteredIndex(key []byte) (map[string][]byte, error) {
 }
 
 func (t *Table) RangeQueryByClusteredIndex(startKey []byte, endKey []byte) ([]map[string][]byte, error) {
+	log.Println("Range query: ", startKey, endKey)
 	rowData, err := t.ClusteredIndex.RangeQuery(startKey, endKey)
 	if err != nil {
 		return nil, err

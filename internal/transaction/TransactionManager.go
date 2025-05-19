@@ -126,7 +126,7 @@ func (tm *TransactionManager) Abort(Trans *Transaction) error {
 }
 func (tm *TransactionManager) rollback(records []WriteAheadLogPackage.WALRecord, Trans *Transaction) error {
 	// need to query here
-	log.Print("Rolling back", Trans.ID)
+	log.Print("Rolling back ", Trans.ID)
 	for i := len(records) - 1; i >= 0; i-- {
 		if records[i].RecordType == WriteAheadLogPackage.WALRecordTypeBegin {
 			break
@@ -158,98 +158,6 @@ func NewQuery(queryType string, column string, startKey []byte, endKey []byte, r
 		Table:    table,
 		Column:   column,
 	}
-}
-func (q *Query) Execute() ([]map[string][]byte, error) {
-	// if q.Type == QueryTypeSelect {
-	// 	if q.Table.Schema.PrimaryKey == q.Column {
-	// 		if bytes.Equal(q.StartKey, q.EndKey) {
-	// 			row, err := q.Table.FindByClusteredIndex(q.StartKey)
-	// 			if err != nil {
-	// 				return nil, err
-	// 			}
-	// 			var result []map[string][]byte
-	// 			result = append(result, row)
-	// 			return result, nil
-	// 		} else if bytes.Compare(q.EndKey, q.StartKey) > 0 {
-	// 			return q.Table.RangeQueryByClusteredIndex(q.StartKey, q.EndKey)
-	// 		} else {
-	// 			return nil, errors.New("end key must be smaller than start key")
-	// 		}
-	// 	} else if _, ok := q.Table.NonClusteredIndexes[q.Column]; ok {
-	// 		if bytes.Equal(q.StartKey, q.EndKey) {
-	// 			row, err := q.Table.FindByNonClusteredIndex(q.Column, q.StartKey)
-	// 			if err != nil {
-	// 				return nil, err
-	// 			}
-	// 			var result []map[string][]byte
-	// 			result = append(result, row)
-	// 			return result, nil
-	// 		} else if bytes.Compare(q.EndKey, q.StartKey) > 0 {
-	// 			return q.Table.RangeQueryByNonClusteredIndex(q.Column, q.StartKey, q.EndKey)
-	// 		} else {
-	// 			return nil, errors.New("end key must be smaller than start key")
-	// 		}
-	// 	} else {
-	// 		// TODO -> Full table scan
-	// 		fmt.Println("Full table scan")
-	// 	}
-	// } else if q.Type == QueryTypeInsert {
-	// 	if err := q.Table.Insert(q.Row); err != nil {
-	// 		return nil, err
-	// 	}
-	// } else if q.Type == QueryTypeDelete {
-	// 	q2 := NewQuery(QueryTypeSelect, q.Column, q.StartKey, q.EndKey, q.Row, q.TransID, q.Table)
-	// 	rows, err := q2.Execute()
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	// idk if removing as a bulk would affect the rotation or not (probably not)
-	// 	for _, row := range rows {
-	// 		if err := q.Table.Delete(row); err != nil {
-	// 			return nil, err
-	// 		}
-	// 	}
-	// } else if q.Type == QueryTypeUpdate {
-	// 	// for key, value := range q.Row {
-	// 	// 	if _, ok := q.Table.NonClusteredIndexes[key]; !ok {
-	// 	// 		continue
-	// 	// 	}
-	// 	// 	// Key is indexed
-	// 	// 	q2 := NewQuery(QueryTypeSelect, key, q.StartKey, q.EndKey, q.Row, q.Trans, q.Table)
-	// 	// 	rows, err := q2.Execute()
-	// 	// 	if err != nil {
-	// 	// 		return nil, err
-	// 	// 	}
-	// 	// 	index := q.Table.NonClusteredIndexes[key]
-	// 	// 	for _, row := range rows {
-	// 	// 		if row[index.PrimaryKey] != q.Row[q.Table.Schema.PrimaryKey] {
-	// 	// 			continue
-	// 	// 		}
-	// 	// 		err := index.IndexTree.Delete(value, q.Trans)
-	// 	// 		serializedRow, err := serializeRow(row)
-	// 	// 		if err != nil {
-	// 	// 			return nil, err
-	// 	// 		}
-	// 	// 		// if inserting a existing key, the value will be updated
-	// 	// 		if err := q.Table.ClusteredIndex.Insert(row[q.Table.Schema.PrimaryKey], serializedRow, q.Trans); err != nil {
-	// 	// 			return nil, err
-	// 	// 		}
-	// 	// 	}
-	// 	// 	q3 := NewQuery(QueryTypeDelete, q.Column, q.StartKey, q.EndKey, nil, q.Trans, q.Table)
-	// 	// 	_, err = q3.Execute()
-	// 	// 	if err != nil {
-	// 	// 		return nil, err
-	// 	// 	}
-	// 	// 	if key == q.Table.Schema.PrimaryKey {
-	// 	// 		continue
-	// 	// 	}
-	// 	// 	for i, _ := range rows {
-	// 	// 		rows[i][key] = value
-	// 	// 	}
-	// 	// }
-
-	// }
-	return nil, nil
 }
 
 // utils
@@ -318,6 +226,39 @@ func (tm *TransactionManager) Insert(tableName string, row map[string][]byte, tr
 	}
 	return nil
 }
+func (tm *TransactionManager) Update(tableName string, row map[string][]byte, transaction *Transaction) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	// Clustered Index
+	pk := row[tm.DB.Tables[tableName].Schema.PrimaryKey]
+	serializedRow, err := serializeRow(row)
+	if err != nil {
+		return err
+	}
+	oldRow, err := tm.DB.Tables[tableName].FindByClusteredIndex(pk)
+	if err != nil {
+		return err
+	}
+	serializedOldRow, err := serializeRow(oldRow)
+	if err != nil {
+		return err
+	}
+	record := WriteAheadLogPackage.NewWALRecord(
+		uint64(time.Now().Unix()),
+		transaction.ID,
+		WriteAheadLogPackage.WALRecordTypeUpdate,
+		tableName,
+		pk,
+		serializedOldRow,
+		serializedRow,
+	)
+	currentTransaction := tm.ActiveTransactions[transaction.ID]
+	currentTransaction.WALManager.LogRecord(record)
+	if err := tm.DB.Tables[tableName].Update(row, transaction.ID); err != nil {
+		return err
+	}
+	return nil
+}
 
 func (tm *TransactionManager) Delete(tableName string, row map[string][]byte, transaction *Transaction) error {
 	tm.mu.Lock()
@@ -343,4 +284,13 @@ func (tm *TransactionManager) Delete(tableName string, row map[string][]byte, tr
 		return err
 	}
 	return nil
+}
+func (tm *TransactionManager) Select(tableName string, startKey []byte, endKey []byte, transaction *Transaction) ([]map[string][]byte, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	data, err := tm.DB.Tables[tableName].RangeQueryByClusteredIndex(startKey, endKey)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
